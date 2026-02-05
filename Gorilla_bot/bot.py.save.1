@@ -1,0 +1,471 @@
+import asyncio
+import json
+import os
+import random
+from datetime import datetime, timedelta
+from typing import Optional
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    GORILLA_POST_CHAT_ID,
+    GORILLA_POSTS_PER_DAY_MIN,
+    GORILLA_POSTS_PER_DAY_MAX,
+    GORILLA_TIME_START,
+    GORILLA_TIME_END
+)
+from dateutil import parser as dateparser
+from openai import OpenAI
+
+from config import (
+    BOT_TOKEN,
+    OPENROUTER_API_KEY,
+    POSTS_FILE,
+    DAILY_POST_CHAT_ID,
+    POSTS_PER_DAY_MIN,
+    POSTS_PER_DAY_MAX,
+    POST_TIME_START,
+    POST_TIME_END
+)
+import prompts
+
+# =======================
+# STORAGE
+# =======================
+
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+GOALS_FILE = f"{DATA_DIR}/goals.json"
+REMINDERS_FILE = f"{DATA_DIR}/reminders.json"
+CONTEXT_FILE = f"{DATA_DIR}/context.json"
+EDIT_STATE_FILE = f"{DATA_DIR}/edit_state.json"
+
+POSTS_PLAN_FILE = f"{DATA_DIR}/posts_plan.json"
+POSTS_STATS_FILE = f"{DATA_DIR}/posts_stats.json"
+POSTS_STATE_FILE = f"{DATA_DIR}/posts_state.json"
+
+MEMORY_FILE = f"{DATA_DIR}/memory.json"
+
+# =======================
+# JSON HELPERS
+# =======================
+
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read().strip()
+            return json.loads(text) if text else default
+    except:
+        return default
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# =======================
+# MEMORY (ADD, SAFE)
+# =======================
+
+def remember(user_id: int, context: str, text: str):
+    memory = load_json(MEMORY_FILE, {})
+    uid = str(user_id)
+
+    memory.setdefault(uid, {"common": [], "contexts": {}})
+    memory[uid]["contexts"].setdefault(context, [])
+
+    entry = {
+        "text": text,
+        "time": datetime.now().isoformat()
+    }
+
+    if len(text) > 20:
+        memory[uid]["contexts"][context].append(entry)
+        if context != "GORILLA":
+            memory[uid]["common"].append(entry)
+
+    save_json(MEMORY_FILE, memory)
+
+def recall(user_id: int, context: str, limit=6):
+    memory = load_json(MEMORY_FILE, {})
+    uid = str(user_id)
+
+    if uid not in memory:
+        return []
+
+    result = []
+    result.extend(memory[uid]["common"][-limit:])
+
+    if context in memory[uid]["contexts"]:
+        result.extend(memory[uid]["contexts"][context][-limit:])
+
+    return result[-limit:]
+
+# =======================
+# AUTOPST STATE
+# =======================
+
+MIN_POST_INTERVAL = timedelta(hours=4)
+
+def get_last_post_time() -> Optional[datetime]:
+    state = load_json(POSTS_STATE_FILE, {})
+    t = state.get("last_post_time")
+    return datetime.fromisoformat(t) if t else None
+
+def set_last_post_time(dt: datetime):
+    save_json(POSTS_STATE_FILE, {"last_post_time": dt.isoformat()})
+
+# =======================
+# STATS
+# =======================
+
+def today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+def init_stats():
+    return {"total_sent": 0, "days": {}}
+
+def update_post_stats(text: str, time_str: str):
+    stats = load_json(POSTS_STATS_FILE, init_stats())
+    day = today_key()
+    stats["days"].setdefault(day, []).append({
+        "time": time_str,
+        "text": text,
+        "channel": DAILY_POST_CHAT_ID
+    })
+    stats["total_sent"] += 1
+    save_json(POSTS_STATS_FILE, stats)
+
+# =======================
+# INIT
+# =======================
+
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
+
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+async def generate_gorilla_post():
+    resp = client.chat.completions.create(
+        model="openai/gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": prompts.GORILLA_AUTOPST},
+            {"role": "user", "content": "Одна мысль."}
+        ],
+        temperature=0.6,
+        max_tokens=100
+    )
+    return resp.choices[0].message.content.strip()
+)
+
+keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🦍 Gorilla"), KeyboardButton(text="🌱 Сад"), KeyboardButton(text="💪 Тело")],
+        [KeyboardButton(text="⏰ Напоминания"), KeyboardButton(text="🎯 Цели")],
+        [KeyboardButton(text="📊 Статистика")]
+    ],
+    resize_keyboard=True
+)
+
+# =======================
+# INTENTS
+# =======================
+
+def is_reminder_intent(text: str) -> bool:
+    return any(w in text.lower() for w in ["напомни", "напомин", "уведом"])
+
+def is_goal_intent(text: str) -> bool:
+    return any(w in text.lower() for w in ["цель", "хочу", "задача"])
+
+# =======================
+# TIME
+# =======================
+
+def smart_time(text: str) -> Optional[datetime]:
+    try:
+        parsed = dateparser.parse(text, dayfirst=True, fuzzy=True)
+        if parsed:
+            if parsed < datetime.now():
+                parsed += timedelta(days=1)
+            return parsed
+    except:
+        pass
+    return None
+
+# =======================
+# CONTEXT
+# =======================
+
+def set_context(user_id: int, ctx: str):
+    data = load_json(CONTEXT_FILE, {})
+    data[str(user_id)] = ctx
+    save_json(CONTEXT_FILE, data)
+
+def get_context(user_id: int) -> str:
+    return load_json(CONTEXT_FILE, {}).get(str(user_id), "GORILLA")
+
+def prompt_by_context(ctx: str) -> str:
+    return {
+        "GORILLA": prompts.GORILLA,
+        "GARDEN": prompts.GARDEN,
+        "BODY": prompts.BODY
+    }.get(ctx, prompts.GORILLA)
+
+# =======================
+# COMMANDS
+# =======================
+
+@dp.message(CommandStart())
+async def start(msg: types.Message):
+    set_context(msg.from_user.id, "GORILLA")
+    await msg.answer("Я Gorilla 🦍", reply_markup=keyboard)
+
+@dp.message(lambda m: m.text in ["🦍 Gorilla", "🌱 Сад", "💪 Тело"])
+async def switch_context(msg: types.Message):
+    mapping = {
+        "🦍 Gorilla": "GORILLA",
+        "🌱 Сад": "GARDEN",
+        "💪 Тело": "BODY"
+    }
+    set_context(msg.from_user.id, mapping[msg.text])
+    await msg.answer(f"Фокус: {msg.text}", reply_markup=keyboard)
+
+# =======================
+# LISTS
+# =======================
+
+@dp.message(lambda m: m.text == "🎯 Цели")
+async def show_goals(msg: types.Message):
+    goals = load_json(GOALS_FILE, [])
+    user_goals = [g for g in goals if g["user_id"] == msg.from_user.id]
+    if not user_goals:
+        await msg.answer("🎯 Целей нет")
+        return
+    for i, g in enumerate(user_goals):
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✏️", callback_data=f"edit:goal:{i}"),
+            InlineKeyboardButton(text="❌", callback_data=f"delete:goal:{i}")
+        ]])
+        await msg.answer(g["text"], reply_markup=kb)
+
+@dp.message(lambda m: m.text == "⏰ Напоминания")
+async def show_reminders(msg: types.Message):
+    reminders = load_json(REMINDERS_FILE, [])
+    user_items = [r for r in reminders if r["user_id"] == msg.from_user.id]
+    if not user_items:
+        await msg.answer("⏰ Напоминаний нет")
+        return
+    for i, r in enumerate(user_items):
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✏️", callback_data=f"edit:reminder:{i}"),
+            InlineKeyboardButton(text="❌", callback_data=f"delete:reminder:{i}")
+        ]])
+        await msg.answer(r["text"], reply_markup=kb)
+
+# =======================
+# CALLBACKS
+# =======================
+
+@dp.callback_query()
+async def callback_router(cb: CallbackQuery):
+    data = cb.data
+    user_id = cb.from_user.id
+    edit_state = load_json(EDIT_STATE_FILE, {})
+
+    if ":" not in data:
+        return
+
+    action, item_type, idx = data.split(":")
+    idx = int(idx)
+
+    if action == "delete":
+        file = GOALS_FILE if item_type == "goal" else REMINDERS_FILE
+        items = load_json(file, [])
+        user_items = [x for x in items if x["user_id"] == user_id]
+        if idx < len(user_items):
+            items.remove(user_items[idx])
+            save_json(file, items)
+        await cb.message.edit_text("❌ Удалено")
+        return
+
+    if action == "edit":
+        edit_state[str(user_id)] = {"type": item_type, "index": idx}
+        save_json(EDIT_STATE_FILE, edit_state)
+        await cb.message.answer("✏️ Введите новый текст:")
+
+# =======================
+# MAIN HANDLER
+# =======================
+
+@dp.message()
+async def handle(msg: types.Message):
+    text = msg.text.strip()
+    user_id = msg.from_user.id
+    ctx = get_context(user_id)
+
+    remember(user_id, ctx, text)
+
+    edit_state = load_json(EDIT_STATE_FILE, {})
+    if str(user_id) in edit_state:
+        state = edit_state.pop(str(user_id))
+        save_json(EDIT_STATE_FILE, edit_state)
+        file = GOALS_FILE if state["type"] == "goal" else REMINDERS_FILE
+        items = load_json(file, [])
+        count = -1
+        for item in items:
+            if item["user_id"] == user_id:
+                count += 1
+                if count == state["index"]:
+                    item["text"] = text
+                    break
+        save_json(file, items)
+        await msg.answer("✅ Обновлено")
+        return
+
+    if is_reminder_intent(text):
+        t = smart_time(text)
+        reminders = load_json(REMINDERS_FILE, [])
+        reminders.append({
+            "user_id": user_id,
+            "text": text,
+            "time": t.isoformat() if t else None,
+            "sent": False
+        })
+        save_json(REMINDERS_FILE, reminders)
+        await msg.answer("⏰ Напоминание сохранено")
+        return
+
+    if is_goal_intent(text):
+        goals = load_json(GOALS_FILE, [])
+        goals.append({"user_id": user_id, "text": text})
+        save_json(GOALS_FILE, goals)
+        await msg.answer("🎯 Цель сохранена")
+        return
+
+    memory = recall(user_id, ctx)
+    memory_text = "\n".join(f"- {m['text']}" for m in memory)
+
+    resp = client.chat.completions.create(
+        model="openai/gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": prompt_by_context(ctx) + "\n\nПАМЯТЬ:\n" + memory_text
+            },
+            {"role": "user", "content": text}
+        ],
+        temperature=0.4
+    )
+
+    await msg.answer(resp.choices[0].message.content)
+
+# =======================
+# AUTOPST LOOP (НЕ ТРОГАЛИ)
+# =======================
+
+def load_posts():
+    with open(POSTS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_posts(data):
+    with open(POSTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_random_post():
+    data = load_posts()
+    posts = data["posts"]
+^    unused = [p for p in posts if not p.get("used")]
+    if not unused:
+        for p in posts:
+            p["used"] = False
+        unused = posts
+    post = random.choice(unused)
+    post["used"] = True
+    save_posts(data)
+    return post["text"]
+
+def generate_daily_schedule():
+   def generate_gorilla_schedule():
+    count = random.randint(
+        GORILLA_POSTS_PER_DAY_MIN,
+        GORILLA_POSTS_PER_DAY_MAX
+    )
+    times = set()
+    while len(times) < count:
+        h = random.randint(GORILLA_TIME_START, GORILLA_TIME_END - 1)
+        m = random.randint(0, 59)
+        times.add(f"{h:02d}:{m:02d}")
+    return sorted(times)
+ count = random.randint(POSTS_PER_DAY_MIN, POSTS_PER_DAY_MAX)
+    times = set()
+    while len(times) < count:
+        h = random.randint(POST_TIME_START, POST_TIME_END - 1)
+        m = random.randint(0, 59)
+        times.add(f"{h:02d}:{m:02d}")
+    return sorted(times)
+
+async def daily_post_loop():
+    today = None
+    plan = []
+    sent = set()
+
+    while True:
+        now = datetime.now()
+
+        if today != now.date():
+            today = now.date()
+            plan = generate_daily_schedule()
+            sent.clear()
+            save_json(POSTS_PLAN_FILE, {"date": today_key(), "plan": plan})
+
+        t = now.strftime("%H:%M")
+        if t in plan and t not in sent:
+            last = get_last_post_time()
+            if not last or now - last >= MIN_POST_INTERVAL:
+                text = get_random_post()
+                await bot.send_message(DAILY_POST_CHAT_ID, text)
+                sent.add(t)
+                set_last_post_time(now)
+                update_post_stats(text, t)
+
+        await asyncio.sleep(30)
+
+# =======================
+# REMINDER LOOP
+# =======================
+
+async def reminder_loop():
+    while True:
+        now = datetime.now()
+        reminders = load_json(REMINDERS_FILE, [])
+        changed = False
+        for r in reminders:
+            if r["sent"] or not r["time"]:
+                continue
+            if datetime.fromisoformat(r["time"]) <= now:
+                await bot.send_message(r["user_id"], f"⏰ {r['text']}")
+                r["sent"] = True
+                changed = True
+        if changed:
+            save_json(REMINDERS_FILE, reminders)
+        await asyncio.sleep(30)
+
+# =======================
+# RUN
+# =======================
+
+async def main():
+    asyncio.create_task(reminder_loop())
+    asyncio.create_task(daily_post_loop())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
