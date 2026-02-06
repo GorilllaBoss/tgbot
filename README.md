@@ -29,3 +29,9 @@ python run_all_bots.py
 ## Частые проблемы
 - `ModuleNotFoundError` — установи зависимости командой выше.
 - `AuthenticationError 401` в Gorilla/LifeKey — проверь API-ключ OpenRouter и доступность аккаунта.
+
+
+## Важные условия запуска
+- У `Gorilla` и `LifeKey` **должны быть разные BOT_TOKEN**, иначе будет `TelegramConflictError` (один токен не может иметь два long-polling процесса одновременно).
+- Для `gonkaai` нужен `GONKA_API_KEY`, иначе AI-ответы в чате будут в fallback-режиме.
+- Если запускаешь только одного бота, отключи остальные через `RUN_GORILLA/RUN_GONKAAI/RUN_LIFEKEY`.

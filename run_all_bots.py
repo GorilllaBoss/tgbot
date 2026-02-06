@@ -25,6 +25,19 @@ def enabled(var_name: str, default: str = "1") -> bool:
     return os.getenv(var_name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def read_gorilla_token() -> str:
+    cfg = ROOT / "Gorilla_bot" / "config.py"
+    if not cfg.exists():
+        return ""
+
+    for raw in cfg.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("BOT_TOKEN") and "=" in line:
+            _, value = line.split("=", 1)
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
 def lifekey_candidates() -> list[Path]:
     custom = os.getenv("LIFEKEY_ENTRY")
     candidates = []
@@ -80,6 +93,12 @@ async def stop_all(running):
 
 async def main():
     load_env_file(ROOT / ".env")
+
+    gorilla_token = read_gorilla_token()
+    lifekey_token = os.getenv("LIFEKEY_BOT_TOKEN") or os.getenv("BOT_TOKEN") or ""
+    if gorilla_token and lifekey_token and gorilla_token == lifekey_token and enabled("RUN_GORILLA", "1") and enabled("RUN_LIFEKEY", "1"):
+        print("[launcher] token conflict: Gorilla and LifeKey use same BOT token. Disabling LifeKey to avoid TelegramConflictError.")
+        os.environ["RUN_LIFEKEY"] = "0"
 
     bots: list[tuple[str, Path]] = []
 
