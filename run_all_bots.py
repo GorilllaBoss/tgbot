@@ -7,6 +7,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def load_env_file(path: Path):
+    if not path.exists():
+        return
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
 def enabled(var_name: str, default: str = "1") -> bool:
     return os.getenv(var_name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -65,6 +79,8 @@ async def stop_all(running):
 
 
 async def main():
+    load_env_file(ROOT / ".env")
+
     bots: list[tuple[str, Path]] = []
 
     if enabled("RUN_GORILLA", "1"):
@@ -102,16 +118,30 @@ async def main():
         try:
             loop.add_signal_handler(sig, _request_stop)
         except NotImplementedError:
-            # Windows may not support all signal handlers in Proactor loop.
             pass
 
-    wait_tasks = [asyncio.create_task(proc.wait()) for _, proc, _ in running]
-    stop_task = asyncio.create_task(stop_event.wait())
+    while running and not stop_event.is_set():
+        wait_tasks = [asyncio.create_task(proc.wait()) for _, proc, _ in running]
+        stop_task = asyncio.create_task(stop_event.wait())
 
-    done, pending = await asyncio.wait(wait_tasks + [stop_task], return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(wait_tasks + [stop_task], return_when=asyncio.FIRST_COMPLETED)
 
-    for t in pending:
-        t.cancel()
+        for t in pending:
+            t.cancel()
+
+        if stop_task in done:
+            break
+
+        survivors = []
+        for name, proc, out in running:
+            if proc.returncode is None:
+                survivors.append((name, proc, out))
+            else:
+                print(f"[{name}] exited with code {proc.returncode}")
+                out.cancel()
+                await asyncio.gather(out, return_exceptions=True)
+
+        running = survivors
 
     print("Stopping all bots...")
     await stop_all(running)

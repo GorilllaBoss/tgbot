@@ -13,7 +13,7 @@ LIFEKEY_OPENROUTER_KEY = os.getenv("LIFEKEY_OPENROUTER_KEY") or os.getenv("OPENR
 
 bot = None
 dp = Dispatcher()
-client = OpenAI(api_key=LIFEKEY_OPENROUTER_KEY, base_url="https://openrouter.ai/api/v1")
+client = None
 
 ASTRO_PROMPT = (
     "Ты астролог-ассистент. Дай краткий прогноз дня для человека:"
@@ -34,6 +34,9 @@ POST_PROMPT = (
 
 
 def ask_ai(system_text: str, user_text: str) -> str:
+    if client is None:
+        return "⚠️ LIFEKEY_OPENROUTER_KEY не задан. AI-режим недоступен."
+
     try:
         resp = client.chat.completions.create(
             model="openai/gpt-4o-mini",
@@ -108,15 +111,19 @@ async def autopost_loop():
 
 
 async def main():
-    global bot
+    global bot, client
+
     if not LIFEKEY_BOT_TOKEN:
         raise RuntimeError("LIFEKEY_BOT_TOKEN (or BOT_TOKEN) is not set")
-    if not LIFEKEY_OPENROUTER_KEY:
-        raise RuntimeError("LIFEKEY_OPENROUTER_KEY (or OPENROUTER_API_KEY) is not set")
     if not LIFEKEY_CHAT_ID:
         print("LIFEKEY warning: LIFEKEY_CHAT_ID is not set, autopost disabled")
+    if not LIFEKEY_OPENROUTER_KEY:
+        print("LIFEKEY warning: LIFEKEY_OPENROUTER_KEY is not set, AI will return fallback message")
 
     bot = Bot(token=LIFEKEY_BOT_TOKEN)
+
+    if LIFEKEY_OPENROUTER_KEY:
+        client = OpenAI(api_key=LIFEKEY_OPENROUTER_KEY, base_url="https://openrouter.ai/api/v1")
 
     asyncio.create_task(autopost_loop())
     await dp.start_polling(bot)

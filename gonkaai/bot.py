@@ -7,6 +7,8 @@ from openai import OpenAI
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
+
+
 def _int_env(name: str, default: int = 0) -> int:
     value = os.getenv(name)
     try:
@@ -26,17 +28,10 @@ GONKA_API_KEY = os.getenv("GONKA_API_KEY")
 
 CMC_URL = "https://pro-api.coinmarketcap.com/v1"
 
-bot = Bot(token=BOT_TOKEN)
+bot = None
 dp = Dispatcher()
 router = Router()
-
-# -----------------------------
-# Gonka AI клиент
-# -----------------------------
-ai_client = OpenAI(
-    base_url="https://api.gonkagate.com/v1",
-    api_key=GONKA_API_KEY,
-)
+ai_client = None
 
 MODEL_NAME = "qwen/qwen3-235b-a22b-instruct-2507-fp8"
 
@@ -50,9 +45,7 @@ def _is_time_match(now, target: str) -> bool:
     h, m = _parse_time(target)
     return now.hour == h and now.minute == m
 
-# -----------------------------
-# Получение цены
-# -----------------------------
+
 async def get_crypto(symbol="BTC"):
     url = f"{CMC_URL}/cryptocurrency/quotes/latest"
 
@@ -71,15 +64,11 @@ async def get_crypto(symbol="BTC"):
         "volume": q["volume_24h"],
     }
 
-# -----------------------------
-# Поддержка
-# -----------------------------
+
 def calc_support(price):
     return round(price * 0.97), round(price * 0.94)
 
-# -----------------------------
-# Тренд
-# -----------------------------
+
 def detect_trend(change):
     if change > 2:
         return "📈 Сильный рост"
@@ -90,31 +79,34 @@ def detect_trend(change):
     else:
         return "📉 Снижение"
 
-# -----------------------------
-# Универсальный ИИ ответ
-# -----------------------------
+
 async def ai_answer(text):
-    resp = ai_client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты универсальный ИИ-ассистент. "
-                    "Помогаешь в любых вопросах: технологии, обучение, "
-                    "бизнес, криптовалюты, повседневные задачи. "
-                    "Отвечай понятно, кратко и полезно."
-                ),
-            },
-            {"role": "user", "content": text},
-        ],
-    )
+    if ai_client is None:
+        return "⚠️ GONKA_API_KEY не задан. AI-режим недоступен."
 
-    return resp.choices[0].message.content
+    try:
+        resp = ai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты универсальный ИИ-ассистент. "
+                        "Помогаешь в любых вопросах: технологии, обучение, "
+                        "бизнес, криптовалюты, повседневные задачи. "
+                        "Отвечай понятно, кратко и полезно."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
 
-# -----------------------------
-# Пост в канал
-# -----------------------------
+        return resp.choices[0].message.content
+    except Exception as e:
+        print("GONKA AI ERROR:", e)
+        return "⚠️ Ошибка AI-провайдера. Попробуй позже."
+
+
 async def build_market_post():
     data = await get_crypto("BTC")
 
@@ -149,7 +141,11 @@ async def build_market_post():
 
     return text
 
+
 async def autopost():
+    if bot is None or CHANNEL_ID == 0:
+        return
+
     try:
         text = await build_market_post()
         await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
@@ -157,9 +153,7 @@ async def autopost():
     except Exception as e:
         print("Autopost error:", e)
 
-# -----------------------------
-# Планировщик
-# -----------------------------
+
 async def scheduler_loop():
     sent_marks = set()
 
@@ -179,9 +173,7 @@ async def scheduler_loop():
 
         await asyncio.sleep(20)
 
-# -----------------------------
-# Команды BTC / ETH
-# -----------------------------
+
 @router.message(Command("btc"))
 async def btc(message: Message):
     data = await get_crypto("BTC")
@@ -190,6 +182,7 @@ async def btc(message: Message):
         f"BTC: ${data['price']:,.2f}\n"
         f"Изменение 24ч: {data['change24']:.2f}%"
     )
+
 
 @router.message(Command("eth"))
 async def eth(message: Message):
@@ -200,9 +193,7 @@ async def eth(message: Message):
         f"Изменение 24ч: {data['change24']:.2f}%"
     )
 
-# -----------------------------
-# Логика чатов
-# -----------------------------
+
 @router.message()
 async def chat(message: Message):
     if not message.text:
@@ -211,13 +202,11 @@ async def chat(message: Message):
     text = message.text.lower()
     chat_type = message.chat.type
 
-    # личка — отвечаем всегда
     if chat_type == "private":
         reply = await ai_answer(message.text)
         await message.answer(reply)
         return
 
-    # группа — отвечаем при упоминании
     me = await bot.get_me()
     username = me.username.lower()
 
@@ -231,22 +220,33 @@ async def chat(message: Message):
         reply = await ai_answer(message.text)
         await message.reply(reply)
 
-# -----------------------------
-# MAIN
-# -----------------------------
+
 async def main():
+    global bot, ai_client
+
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set for gonkaai")
+
     if not CMC_API_KEY:
         print("Warning: CMC_API_KEY is not set, /btc and /eth may fail")
     if CHANNEL_ID == 0:
         print("Warning: CHANNEL_ID is not set, autopost will fail")
+    if not GONKA_API_KEY:
+        print("Warning: GONKA_API_KEY is not set, AI chat will return fallback message")
+
+    bot = Bot(token=BOT_TOKEN)
+    if GONKA_API_KEY:
+        ai_client = OpenAI(
+            base_url="https://api.gonkagate.com/v1",
+            api_key=GONKA_API_KEY,
+        )
 
     dp.include_router(router)
     asyncio.create_task(scheduler_loop())
 
     print("Bot running...")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
