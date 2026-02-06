@@ -112,16 +112,26 @@ async def build_market_post():
     s1, s2 = calc_support(price)
     trend = detect_trend(change)
 
+    if change >= 3:
+        signal = "🟢 Бычий импульс"
+    elif change <= -3:
+        signal = "🔴 Давление продавцов"
+    else:
+        signal = "🟡 Боковое движение"
+
     text = (
-        f"🚀 Обзор BTC\n\n"
-        f"💰 Цена: ${price:,.0f}\n"
-        f"📉 Изменение 24ч: {change:.2f}%\n"
-        f"📊 Объём: ${volume:,.0f}\n\n"
-        f"{trend}\n\n"
-        f"🧱 Поддержка: {s1:,} / {s2:,}\n\n"
-        f"📌 Сценарий:\n"
-        f"Пока цена держится выше поддержки, структура рынка сохраняется.\n\n"
-        f"#BTC #crypto"
+        "🚀 *BTC Market Brief*\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💰 *Цена:* `${price:,.0f}`\n"
+        f"📈 *24ч:* `{change:+.2f}%`\n"
+        f"📊 *Объём:* `${volume:,.0f}`\n\n"
+        f"{trend} | {signal}\n\n"
+        "🧱 *Уровни поддержки*\n"
+        f"• S1: `{s1:,}`\n"
+        f"• S2: `{s2:,}`\n\n"
+        "📌 *Идея на день:*\n"
+        "Следим за реакцией цены у S1/S2 и работаем только по подтверждению.\n\n"
+        "#BTC #crypto #trading"
     )
 
     return text
@@ -129,7 +139,7 @@ async def build_market_post():
 async def autopost():
     try:
         text = await build_market_post()
-        await bot.send_message(CHANNEL_ID, text)
+        await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
         print("Post sent")
     except Exception as e:
         print("Autopost error:", e)

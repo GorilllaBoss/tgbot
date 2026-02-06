@@ -295,7 +295,20 @@ def get_random_post():
     post = random.choice(unused)
     post["used"] = True
     save_posts(data)
-    return post["text"]
+    text = post["text"].strip()
+
+    headers = [
+        "🔥 Gorilla Signal",
+        "🦍 Gorilla Focus",
+        "⚡ Gorilla Momentum",
+    ]
+    footers = [
+        "\n\n#discipline #focus",
+        "\n\n#mindset #action",
+        "\n\n#noexcuses #progress",
+    ]
+
+    return f"{random.choice(headers)}\n\n{text}{random.choice(footers)}"
 
 def generate_schedule():
     count = random.randint(POSTS_PER_DAY_MIN, POSTS_PER_DAY_MAX)
