@@ -30,6 +30,23 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
+
+def ai_complete(messages, temperature=0.4, max_tokens=300):
+    try:
+        resp = client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return resp.choices[0].message.content
+    except AuthenticationError:
+        print("AI ERROR: auth failed, check OPENROUTER_API_KEY")
+        return None
+    except Exception as e:
+        print("AI ERROR:", e)
+        return None
+
 # =======================
 # MEMORY (MULTI USER)
 # =======================
@@ -188,16 +205,16 @@ def build_daily_from_raw(user_id: int, date: str):
 {raw_text}
 """
 
-    resp = client.chat.completions.create(
-        model="openai/gpt-4o-mini",
+    daily_text = ai_complete(
         messages=[{"role": "system", "content": prompt}],
         temperature=0.3,
-        max_tokens=400
+        max_tokens=400,
     )
+    if not daily_text:
+        return
 
-    daily_text = resp.choices[0].message.content.strip()
     with open(f"{base}/daily/{date}.txt", "w", encoding="utf-8") as f:
-        f.write(daily_text)
+        f.write(daily_text.strip())
 
 # =======================
 # NIGHT TASK (00:00)
@@ -229,7 +246,9 @@ async def handle(msg: types.Message):
         return
 
     user_id = msg.from_user.id
-    text = msg.text.strip()
+    text = (msg.text or "").strip()
+    if not text:
+        return
 
     remember(user_id, f"USER: {text}")
 
@@ -260,19 +279,9 @@ async def handle(msg: types.Message):
 
     messages.append({"role": "user", "content": text})
 
-    try:
-        resp = client.chat.completions.create(
-            model="openai/gpt-4o-mini",
-            messages=messages,
-            temperature=0.4,
-            max_tokens=300
-        )
-        answer = resp.choices[0].message.content
-    except AuthenticationError:
-        answer = "⚠️ Ошибка авторизации AI-провайдера. Проверь OPENROUTER_API_KEY и модель в конфиге."
-    except Exception as e:
-        answer = "⚠️ Временная ошибка AI. Попробуй повторить запрос через минуту."
-        print("HANDLE ERROR:", e)
+    answer = ai_complete(messages=messages, temperature=0.4, max_tokens=300)
+    if not answer:
+        answer = "⚠️ Ошибка AI-провайдера. Проверь ключи и попробуй позже."
 
     remember(user_id, f"BOT: {answer}")
     await msg.answer(answer)
@@ -357,14 +366,11 @@ async def daily_post_loop():
 async def ai_post_loop():
     while True:
         try:
-            resp = client.chat.completions.create(
-                model="openai/gpt-4o-mini",
+            text = ai_complete(
                 messages=[{"role": "system", "content": AI_POST_PROMPT}],
                 temperature=0.9,
-                max_tokens=200
+                max_tokens=200,
             )
-
-            text = resp.choices[0].message.content
 
             # 🔒 ЗАЩИТА
             if not text or not text.strip():
@@ -375,10 +381,6 @@ async def ai_post_loop():
             text = text.strip()
             await bot.send_message(AI_CHAT_ID, text)
 
-        except AuthenticationError:
-            print("AI_POST ERROR: auth failed, check OPENROUTER_API_KEY")
-            await asyncio.sleep(60 * 15)
-            continue
         except Exception as e:
             print("AI_POST ERROR:", e)
 

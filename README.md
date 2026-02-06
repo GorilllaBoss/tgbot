@@ -3,7 +3,7 @@
 Единый репозиторий с несколькими Telegram-ботами:
 - `Gorilla_bot` — ассистент, память, автопостинг, AI-посты.
 - `gonkaai` — крипто-ассистент, BTC/ETH, автопостинг.
-- `lifekey` — опционально, подключается через `LIFEKEY_ENTRY`.
+- `lifekey` — астролог + нумеролог + AI-автопостинг.
 
 ## Установка
 ```bash
@@ -15,14 +15,17 @@ python -m pip install -r requirements.txt
 python run_all_bots.py
 ```
 
-### Переменные управления
+### Переменные управления лаунчером
 - `RUN_GORILLA=1|0`
 - `RUN_GONKAAI=1|0`
 - `RUN_LIFEKEY=1|0`
 - `LIFEKEY_ENTRY=lifekey/bot.py`
 
-Если `lifekey` отсутствует в репозитории, лаунчер пропустит его и продолжит запуск остальных ботов.
+### Переменные для LifeKey
+- `LIFEKEY_BOT_TOKEN` (или fallback: `BOT_TOKEN`)
+- `LIFEKEY_OPENROUTER_KEY` (или fallback: `OPENROUTER_API_KEY`)
+- `LIFEKEY_CHAT_ID` (канал для автопостинга)
 
 ## Частые проблемы
-- `ModuleNotFoundError` (например, `apscheduler`) — обнови зависимости из `requirements.txt`.
-- `AuthenticationError 401` в Gorilla — проверь `OPENROUTER_API_KEY` в `Gorilla_bot/config.py` или перенеси ключ в `.env`.
+- `ModuleNotFoundError` — установи зависимости командой выше.
+- `AuthenticationError 401` в Gorilla/LifeKey — проверь API-ключ OpenRouter и доступность аккаунта.

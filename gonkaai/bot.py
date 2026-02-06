@@ -7,13 +7,17 @@ from openai import OpenAI
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from dotenv import load_dotenv
+def _int_env(name: str, default: int = 0) -> int:
+    value = os.getenv(name)
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
 
-load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+CHANNEL_ID = _int_env("CHANNEL_ID", 0)
 
 POST_TIME_1 = os.getenv("POST_TIME_1", "09:00")
 POST_TIME_2 = os.getenv("POST_TIME_2", "18:00")
@@ -231,6 +235,13 @@ async def chat(message: Message):
 # MAIN
 # -----------------------------
 async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is not set for gonkaai")
+    if not CMC_API_KEY:
+        print("Warning: CMC_API_KEY is not set, /btc and /eth may fail")
+    if CHANNEL_ID == 0:
+        print("Warning: CHANNEL_ID is not set, autopost will fail")
+
     dp.include_router(router)
     asyncio.create_task(scheduler_loop())
 
