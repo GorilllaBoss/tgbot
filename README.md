@@ -5,6 +5,11 @@
 - `gonkaai` — крипто-ассистент, BTC/ETH, автопостинг.
 - `lifekey` — опционально, подключается через `LIFEKEY_ENTRY`.
 
+## Установка
+```bash
+python -m pip install -r requirements.txt
+```
+
 ## Запуск в одном окне
 ```bash
 python run_all_bots.py
@@ -17,3 +22,7 @@ python run_all_bots.py
 - `LIFEKEY_ENTRY=lifekey/bot.py`
 
 Если `lifekey` отсутствует в репозитории, лаунчер пропустит его и продолжит запуск остальных ботов.
+
+## Частые проблемы
+- `ModuleNotFoundError` (например, `apscheduler`) — обнови зависимости из `requirements.txt`.
+- `AuthenticationError 401` в Gorilla — проверь `OPENROUTER_API_KEY` в `Gorilla_bot/config.py` или перенеси ключ в `.env`.

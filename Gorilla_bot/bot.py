@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError
 import prompts
 from config import (
     BOT_TOKEN,
@@ -260,14 +260,20 @@ async def handle(msg: types.Message):
 
     messages.append({"role": "user", "content": text})
 
-    resp = client.chat.completions.create(
-        model="openai/gpt-4o-mini",
-        messages=messages,
-        temperature=0.4,
-        max_tokens=300
-    )
+    try:
+        resp = client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=messages,
+            temperature=0.4,
+            max_tokens=300
+        )
+        answer = resp.choices[0].message.content
+    except AuthenticationError:
+        answer = "⚠️ Ошибка авторизации AI-провайдера. Проверь OPENROUTER_API_KEY и модель в конфиге."
+    except Exception as e:
+        answer = "⚠️ Временная ошибка AI. Попробуй повторить запрос через минуту."
+        print("HANDLE ERROR:", e)
 
-    answer = resp.choices[0].message.content
     remember(user_id, f"BOT: {answer}")
     await msg.answer(answer)
 
@@ -369,6 +375,10 @@ async def ai_post_loop():
             text = text.strip()
             await bot.send_message(AI_CHAT_ID, text)
 
+        except AuthenticationError:
+            print("AI_POST ERROR: auth failed, check OPENROUTER_API_KEY")
+            await asyncio.sleep(60 * 15)
+            continue
         except Exception as e:
             print("AI_POST ERROR:", e)
 

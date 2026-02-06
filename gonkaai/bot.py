@@ -1,12 +1,12 @@
 import os
 import asyncio
 import httpx
+from datetime import datetime
 from openai import OpenAI
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,7 +25,6 @@ CMC_URL = "https://pro-api.coinmarketcap.com/v1"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
-scheduler = AsyncIOScheduler()
 
 # -----------------------------
 # Gonka AI клиент
@@ -36,6 +35,16 @@ ai_client = OpenAI(
 )
 
 MODEL_NAME = "qwen/qwen3-235b-a22b-instruct-2507-fp8"
+
+
+def _parse_time(value: str):
+    h, m = value.split(":")
+    return int(h), int(m)
+
+
+def _is_time_match(now, target: str) -> bool:
+    h, m = _parse_time(target)
+    return now.hour == h and now.minute == m
 
 # -----------------------------
 # Получение цены
@@ -147,14 +156,24 @@ async def autopost():
 # -----------------------------
 # Планировщик
 # -----------------------------
-def setup_scheduler():
-    h1, m1 = POST_TIME_1.split(":")
-    h2, m2 = POST_TIME_2.split(":")
+async def scheduler_loop():
+    sent_marks = set()
 
-    scheduler.add_job(autopost, "cron", hour=h1, minute=m1)
-    scheduler.add_job(autopost, "cron", hour=h2, minute=m2)
+    while True:
+        dt = datetime.now()
+        mark = dt.strftime("%Y-%m-%d %H:%M")
 
-    scheduler.start()
+        if mark not in sent_marks and (
+            _is_time_match(dt, POST_TIME_1)
+            or _is_time_match(dt, POST_TIME_2)
+        ):
+            await autopost()
+            sent_marks.add(mark)
+
+        if len(sent_marks) > 2000:
+            sent_marks = set(sorted(sent_marks)[-500:])
+
+        await asyncio.sleep(20)
 
 # -----------------------------
 # Команды BTC / ETH
@@ -213,7 +232,7 @@ async def chat(message: Message):
 # -----------------------------
 async def main():
     dp.include_router(router)
-    setup_scheduler()
+    asyncio.create_task(scheduler_loop())
 
     print("Bot running...")
     await dp.start_polling(bot)
