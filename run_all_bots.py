@@ -1,22 +1,40 @@
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent
 
 
 def enabled(var_name: str, default: str = "1") -> bool:
-    return os.getenv(var_name, default).strip() in {"1", "true", "True", "yes", "on"}
+    return os.getenv(var_name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def lifekey_candidates() -> list[Path]:
+    custom = os.getenv("LIFEKEY_ENTRY")
+    candidates = []
+    if custom:
+        candidates.append(ROOT / custom)
+    candidates.extend(
+        [
+            ROOT / "lifekey" / "bot.py",
+            ROOT / "LifeKey" / "bot.py",
+            ROOT / "lifekey_bot.py",
+        ]
+    )
+    return candidates
 
 
 async def stream_output(prefix: str, stream: asyncio.StreamReader):
-    while True:
-        line = await stream.readline()
-        if not line:
-            break
-        print(f"[{prefix}] {line.decode(errors='replace').rstrip()}")
+    try:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            print(f"[{prefix}] {line.decode(errors='replace').rstrip()}")
+    except asyncio.CancelledError:
+        return
 
 
 async def spawn_bot(name: str, script_path: Path):
@@ -32,8 +50,22 @@ async def spawn_bot(name: str, script_path: Path):
     return proc, output_task
 
 
+async def stop_all(running):
+    for _, proc, _ in running:
+        if proc.returncode is None:
+            proc.terminate()
+
+    await asyncio.sleep(1)
+
+    for _, proc, _ in running:
+        if proc.returncode is None:
+            proc.kill()
+
+    await asyncio.gather(*(proc.wait() for _, proc, _ in running), return_exceptions=True)
+
+
 async def main():
-    bots = []
+    bots: list[tuple[str, Path]] = []
 
     if enabled("RUN_GORILLA", "1"):
         bots.append(("gorilla", ROOT / "Gorilla_bot" / "bot.py"))
@@ -42,8 +74,11 @@ async def main():
         bots.append(("gonkaai", ROOT / "gonkaai" / "bot.py"))
 
     if enabled("RUN_LIFEKEY", "1"):
-        lifekey_entry = os.getenv("LIFEKEY_ENTRY", "lifekey/bot.py")
-        bots.append(("lifekey", ROOT / lifekey_entry))
+        chosen = next((p for p in lifekey_candidates() if p.exists()), None)
+        if chosen:
+            bots.append(("lifekey", chosen))
+        else:
+            print(f"[lifekey] skipped: entrypoint not found. cwd={ROOT}")
 
     running = []
     for name, path in bots:
@@ -57,18 +92,37 @@ async def main():
         print("No bot entrypoints found/enabled. Nothing to run.")
         return
 
-    try:
-        await asyncio.gather(*(proc.wait() for _, proc, _ in running))
-    except KeyboardInterrupt:
-        print("Stopping all bots...")
-        for _, proc, _ in running:
-            if proc.returncode is None:
-                proc.terminate()
-        await asyncio.gather(*(proc.wait() for _, proc, _ in running), return_exceptions=True)
-    finally:
-        for _, _, out in running:
-            out.cancel()
+    stop_event = asyncio.Event()
+
+    def _request_stop(*_):
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _request_stop)
+        except NotImplementedError:
+            # Windows may not support all signal handlers in Proactor loop.
+            pass
+
+    wait_tasks = [asyncio.create_task(proc.wait()) for _, proc, _ in running]
+    stop_task = asyncio.create_task(stop_event.wait())
+
+    done, pending = await asyncio.wait(wait_tasks + [stop_task], return_when=asyncio.FIRST_COMPLETED)
+
+    for t in pending:
+        t.cancel()
+
+    print("Stopping all bots...")
+    await stop_all(running)
+
+    for _, _, out in running:
+        out.cancel()
+    await asyncio.gather(*(out for _, _, out in running), return_exceptions=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
