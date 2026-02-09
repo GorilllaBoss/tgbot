@@ -16,41 +16,11 @@ def load_env_file(path: Path):
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def enabled(var_name: str, default: str = "1") -> bool:
     return os.getenv(var_name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def read_gorilla_token() -> str:
-    cfg = ROOT / "Gorilla_bot" / "config.py"
-    if not cfg.exists():
-        return ""
-
-    for raw in cfg.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith("BOT_TOKEN") and "=" in line:
-            _, value = line.split("=", 1)
-            return value.strip().strip('"').strip("'")
-    return ""
-
-
-def lifekey_candidates() -> list[Path]:
-    custom = os.getenv("LIFEKEY_ENTRY")
-    candidates = []
-    if custom:
-        candidates.append(ROOT / custom)
-    candidates.extend(
-        [
-            ROOT / "lifekey" / "bot.py",
-            ROOT / "LifeKey" / "bot.py",
-            ROOT / "lifekey_bot.py",
-        ]
-    )
-    return candidates
 
 
 async def stream_output(prefix: str, stream: asyncio.StreamReader):
@@ -77,43 +47,19 @@ async def spawn_bot(name: str, script_path: Path):
     return proc, output_task
 
 
-async def stop_all(running):
-    for _, proc, _ in running:
-        if proc.returncode is None:
-            proc.terminate()
-
-    await asyncio.sleep(1)
-
-    for _, proc, _ in running:
-        if proc.returncode is None:
-            proc.kill()
-
-    await asyncio.gather(*(proc.wait() for _, proc, _ in running), return_exceptions=True)
-
-
 async def main():
     load_env_file(ROOT / ".env")
 
-    gorilla_token = read_gorilla_token()
-    lifekey_token = os.getenv("LIFEKEY_BOT_TOKEN") or os.getenv("BOT_TOKEN") or ""
-    if gorilla_token and lifekey_token and gorilla_token == lifekey_token and enabled("RUN_GORILLA", "1") and enabled("RUN_LIFEKEY", "1"):
-        print("[launcher] token conflict: Gorilla and LifeKey use same BOT token. Disabling LifeKey to avoid TelegramConflictError.")
-        os.environ["RUN_LIFEKEY"] = "0"
-
-    bots: list[tuple[str, Path]] = []
-
+    bots = []
     if enabled("RUN_GORILLA", "1"):
         bots.append(("gorilla", ROOT / "Gorilla_bot" / "bot.py"))
 
     if enabled("RUN_GONKAAI", "1"):
         bots.append(("gonkaai", ROOT / "gonkaai" / "bot.py"))
 
-    if enabled("RUN_LIFEKEY", "1"):
-        chosen = next((p for p in lifekey_candidates() if p.exists()), None)
-        if chosen:
-            bots.append(("lifekey", chosen))
-        else:
-            print(f"[lifekey] skipped: entrypoint not found. cwd={ROOT}")
+    if enabled("RUN_LIFEKEY", "0"):
+        lifekey_entry = os.getenv("LIFEKEY_ENTRY", "lifekey/bot.py")
+        bots.append(("lifekey", ROOT / lifekey_entry))
 
     running = []
     for name, path in bots:
@@ -139,31 +85,15 @@ async def main():
         except NotImplementedError:
             pass
 
-    while running and not stop_event.is_set():
-        wait_tasks = [asyncio.create_task(proc.wait()) for _, proc, _ in running]
-        stop_task = asyncio.create_task(stop_event.wait())
-
-        done, pending = await asyncio.wait(wait_tasks + [stop_task], return_when=asyncio.FIRST_COMPLETED)
-
-        for t in pending:
-            t.cancel()
-
-        if stop_task in done:
-            break
-
-        survivors = []
-        for name, proc, out in running:
-            if proc.returncode is None:
-                survivors.append((name, proc, out))
-            else:
-                print(f"[{name}] exited with code {proc.returncode}")
-                out.cancel()
-                await asyncio.gather(out, return_exceptions=True)
-
-        running = survivors
+    wait_tasks = [asyncio.create_task(proc.wait()) for _, proc, _ in running]
+    stop_task = asyncio.create_task(stop_event.wait())
+    await asyncio.wait(wait_tasks + [stop_task], return_when=asyncio.FIRST_COMPLETED)
 
     print("Stopping all bots...")
-    await stop_all(running)
+    for _, proc, _ in running:
+        if proc.returncode is None:
+            proc.terminate()
+    await asyncio.gather(*(proc.wait() for _, proc, _ in running), return_exceptions=True)
 
     for _, _, out in running:
         out.cancel()

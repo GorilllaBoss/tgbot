@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
-from openai import OpenAI, AuthenticationError
+from openai import OpenAI
 import prompts
 from config import (
     BOT_TOKEN,
@@ -29,23 +29,6 @@ client = OpenAI(
     api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1"
 )
-
-
-def ai_complete(messages, temperature=0.4, max_tokens=300):
-    try:
-        resp = client.chat.completions.create(
-            model="openai/gpt-4o-mini",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return resp.choices[0].message.content
-    except AuthenticationError:
-        print("AI ERROR: auth failed, check OPENROUTER_API_KEY")
-        return None
-    except Exception as e:
-        print("AI ERROR:", e)
-        return None
 
 # =======================
 # MEMORY (MULTI USER)
@@ -205,16 +188,16 @@ def build_daily_from_raw(user_id: int, date: str):
 {raw_text}
 """
 
-    daily_text = ai_complete(
+    resp = client.chat.completions.create(
+        model="openai/gpt-4o-mini",
         messages=[{"role": "system", "content": prompt}],
         temperature=0.3,
-        max_tokens=400,
+        max_tokens=400
     )
-    if not daily_text:
-        return
 
+    daily_text = resp.choices[0].message.content.strip()
     with open(f"{base}/daily/{date}.txt", "w", encoding="utf-8") as f:
-        f.write(daily_text.strip())
+        f.write(daily_text)
 
 # =======================
 # NIGHT TASK (00:00)
@@ -246,9 +229,7 @@ async def handle(msg: types.Message):
         return
 
     user_id = msg.from_user.id
-    text = (msg.text or "").strip()
-    if not text:
-        return
+    text = msg.text.strip()
 
     remember(user_id, f"USER: {text}")
 
@@ -279,10 +260,14 @@ async def handle(msg: types.Message):
 
     messages.append({"role": "user", "content": text})
 
-    answer = ai_complete(messages=messages, temperature=0.4, max_tokens=300)
-    if not answer:
-        answer = "⚠️ Ошибка AI-провайдера. Проверь ключи и попробуй позже."
+    resp = client.chat.completions.create(
+        model="openai/gpt-4o-mini",
+        messages=messages,
+        temperature=0.4,
+        max_tokens=300
+    )
 
+    answer = resp.choices[0].message.content
     remember(user_id, f"BOT: {answer}")
     await msg.answer(answer)
 
@@ -310,20 +295,7 @@ def get_random_post():
     post = random.choice(unused)
     post["used"] = True
     save_posts(data)
-    text = post["text"].strip()
-
-    headers = [
-        "🔥 Gorilla Signal",
-        "🦍 Gorilla Focus",
-        "⚡ Gorilla Momentum",
-    ]
-    footers = [
-        "\n\n#discipline #focus",
-        "\n\n#mindset #action",
-        "\n\n#noexcuses #progress",
-    ]
-
-    return f"{random.choice(headers)}\n\n{text}{random.choice(footers)}"
+    return post["text"]
 
 def generate_schedule():
     count = random.randint(POSTS_PER_DAY_MIN, POSTS_PER_DAY_MAX)
@@ -366,11 +338,14 @@ async def daily_post_loop():
 async def ai_post_loop():
     while True:
         try:
-            text = ai_complete(
+            resp = client.chat.completions.create(
+                model="openai/gpt-4o-mini",
                 messages=[{"role": "system", "content": AI_POST_PROMPT}],
                 temperature=0.9,
-                max_tokens=200,
+                max_tokens=200
             )
+
+            text = resp.choices[0].message.content
 
             # 🔒 ЗАЩИТА
             if not text or not text.strip():
